@@ -1,69 +1,162 @@
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const path = require('path');
 
-// Initialize Express app
 const app = express();
 
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors({ origin: '*' }));
+app.use(cors());
 
-// Connect to MongoDB
-mongoose.connect('mongodb://127.0.0.1:27017/gdbproject', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-}).then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.error('Error connecting to MongoDB:', err));
+// Serve frontend files from public folder
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Create a Mongoose schema for users
+// MongoDB connection
+const MONGODB_URI = process.env.MONGODB_URI;
+
 const userSchema = new mongoose.Schema({
-  username: String,
-  email: { type: String, unique: true },
-  password: String,
+  username: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true
+  },
+  password: {
+    type: String,
+    required: true
+  }
 });
 
-// Create a model based on the schema
 const User = mongoose.model('User', userSchema);
 
-// Handle registration
+// Health check
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    message: 'GDP Project API is running'
+  });
+});
+
+// Registration
 app.post('/register', async (req, res) => {
-  const { username, email, password } = req.body;
- 
   try {
-    const existingUser = await User.findOne({ email });
+    const { username, email, password } = req.body;
+
+    if (!username || !email || !password) {
+      return res.status(400).json({
+        message: 'All fields are required'
+      });
+    }
+
+    const existingUser = await User.findOne({
+      email: email.toLowerCase().trim()
+    });
+
     if (existingUser) {
-      return res.status(400).json({ message: 'Email already in use' });
+      return res.status(409).json({
+        message: 'Email already registered'
+      });
     }
 
-    const newUser = new User({ username, email, password });
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = new User({
+      username,
+      email: email.toLowerCase().trim(),
+      password: hashedPassword
+    });
+
     await newUser.save();
-    res.status(201).json({ message: 'User registered successfully!' });
-  } catch (err) {
-    console.error('Error registering user:', err);
-    res.status(500).json({ message: 'Error registering user', error: err.message });
+
+    res.status(201).json({
+      message: 'User registered successfully!'
+    });
+
+  } catch (error) {
+    console.error('Registration error:', error);
+
+    res.status(500).json({
+      message: 'Registration failed'
+    });
   }
 });
 
-// Handle login
+// Login
 app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
- 
   try {
-    const user = await User.findOne({ email, password });
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid login credentials' });
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        message: 'Email and password are required'
+      });
     }
-    res.status(200).json({ message: 'Login successful' });
-  } catch (err) {
-    console.error('Error logging in:', err);
-    res.status(500).json({ message: 'Error logging in', error: err.message });
+
+    const user = await User.findOne({
+      email: email.toLowerCase().trim()
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        message: 'Invalid email or password'
+      });
+    }
+
+    const isPasswordValid = await bcrypt.compare(
+      password,
+      user.password
+    );
+
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        message: 'Invalid email or password'
+      });
+    }
+
+    res.status(200).json({
+      message: 'Login successful',
+      username: user.username
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+
+    res.status(500).json({
+      message: 'Login failed'
+    });
   }
 });
 
-// Start the server
-const port = process.env.PORT || 3002;
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
-});
+// Start server after MongoDB connection
+const PORT = process.env.PORT || 3002;
+
+async function startServer() {
+  try {
+    if (!MONGODB_URI) {
+      throw new Error('MONGODB_URI environment variable is missing');
+    }
+
+    await mongoose.connect(MONGODB_URI);
+
+    console.log('Connected to MongoDB successfully');
+
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+
+  } catch (error) {
+    console.error('Server startup failed:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
